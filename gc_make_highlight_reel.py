@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import argparse
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from gc_common import load_json, make_reel, plays_to_segments, video_source_from_game
+from gc_make_condensed_game import (
+    burn_in_png_overlays,
+    opponent_label,
+    read_description_overrides,
+    write_scorebug_pngs,
+)
 from gc_make_player_reels import (
     events_by_pbp_id,
     load_stream_events_for_game,
@@ -41,6 +48,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default="gc_render_cache/segments", help="Directory for reusable local clip segments.")
     parser.add_argument("--no-cache", action="store_true", help="Disable reusable local clip segment cache.")
     parser.add_argument("--plays-output", help="Optional text file listing selected plays. Defaults to OUTPUT.plays.txt.")
+    parser.add_argument("--description-overrides", help="Optional markdown review file whose Proposed lines override generated overlay descriptions.")
+    parser.add_argument("--scorebug", action="store_true", help="Burn in a centered scorebug and play description.")
+    parser.add_argument("--team-label", default="TIG", help="Scorebug label for the fetched team.")
+    parser.add_argument("--opponent-label", help="Scorebug label for the opponent. Defaults to an abbreviation from the opponent name.")
     return parser.parse_args()
 
 
@@ -294,22 +305,43 @@ def main() -> None:
     plays = [play for _, play in selected]
 
     output = Path(args.output)
+    segments = plays_to_segments(
+        plays,
+        start_buffer=args.start_buffer,
+        end_buffer=args.end_buffer,
+        min_duration=args.min_segment_length,
+        time_shift=args.time_shift,
+        long_clip_start_buffer=args.long_clip_start_buffer,
+    )
+    render_output = output
+    temp_dir = None
+    if args.scorebug:
+        temp_dir = tempfile.TemporaryDirectory(prefix="gc-highlight-overlay-")
+        render_output = Path(temp_dir.name) / "clean.mp4"
     make_reel(
         source,
-        output,
-        plays_to_segments(
-            plays,
-            start_buffer=args.start_buffer,
-            end_buffer=args.end_buffer,
-            min_duration=args.min_segment_length,
-            time_shift=args.time_shift,
-            long_clip_start_buffer=args.long_clip_start_buffer,
-        ),
+        render_output,
+        segments,
         cookie=cookie,
         reencode=args.reencode,
         max_merge_gap=args.max_merge_gap,
         cache_dir=None if args.no_cache else args.cache_dir,
     )
+    if args.scorebug:
+        assert temp_dir is not None
+        overlays = write_scorebug_pngs(
+            Path(temp_dir.name),
+            clean_video=render_output,
+            game=game,
+            selected=selected,
+            segments=segments,
+            max_merge_gap=args.max_merge_gap,
+            team_label=args.team_label,
+            opp_label=args.opponent_label or opponent_label(game),
+            description_overrides=read_description_overrides(Path(args.description_overrides) if args.description_overrides else None),
+        )
+        burn_in_png_overlays(render_output, output, overlays)
+        temp_dir.cleanup()
     plays_output = Path(args.plays_output) if args.plays_output else output.with_suffix(".plays.txt")
     write_selected_plays(plays_output, selected)
     print(f"Wrote {args.output} ({len(plays)} plays)")

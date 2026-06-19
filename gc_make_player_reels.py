@@ -6,19 +6,21 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from gc_common import (
     GCError,
     Segment,
-    adjusted_segment_window,
     flatten_stream_events,
     load_json,
     make_reel,
+    plays_to_segments,
     slugify,
     video_source_from_game,
 )
+from gc_make_condensed_game import burn_in_png_overlays, opponent_label, write_scorebug_pngs
 
 
 ON_BASE_TYPES = {
@@ -74,11 +76,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pitcher-pre-roll", type=float, default=5.0)
     parser.add_argument("--fielder-pre-roll", type=float, default=5.0)
     parser.add_argument("--post-roll", type=float, default=4.0)
-    parser.add_argument("--start-buffer", type=float, default=6.0, help="Additional seconds to subtract from every segment start.")
-    parser.add_argument("--end-buffer", type=float, default=4.0, help="Additional seconds to add to every segment end.")
-    parser.add_argument("--min-segment-length", type=float, default=18.0, help="Minimum seconds to keep for each selected moment.")
+    parser.add_argument("--start-buffer", type=float, default=4.0, help="Additional seconds to subtract from every segment start.")
+    parser.add_argument("--end-buffer", type=float, default=2.0, help="Additional seconds to add to every segment end.")
+    parser.add_argument("--min-segment-length", type=float, default=12.0, help="Minimum seconds to keep for each selected moment.")
+    parser.add_argument("--time-shift", type=float, default=0.0, help="Shift every play timestamp by this many seconds before cutting.")
+    parser.add_argument("--long-clip-start-buffer", type=float, default=18.0, help="Pre-roll to use for longer GameChanger clips.")
     parser.add_argument("--cache-dir", default="gc_render_cache/segments", help="Directory for reusable local clip segments.")
     parser.add_argument("--no-cache", action="store_true", help="Disable reusable local clip segment cache.")
+    parser.add_argument("--scorebug", action="store_true", help="Burn in a centered scorebug and play description.")
+    parser.add_argument("--team-label", default="TIG", help="Scorebug label for the fetched team.")
+    parser.add_argument("--opponent-label", help="Scorebug label for the opponent. Defaults to an abbreviation from the opponent name.")
     return parser.parse_args()
 
 
@@ -292,26 +299,22 @@ def moment_segment(
     start_buffer: float,
     end_buffer: float,
     min_segment_length: float,
-    duration_limit: float | None,
+    time_shift: float,
+    long_clip_start_buffer: float,
 ) -> Segment | None:
-    offset = play.get("video_offset_sec") or play.get("clip_end_sec")
-    if offset is None:
-        return None
-    window = adjusted_segment_window(
-        float(offset) - pre_roll,
-        float(offset) + post_roll,
+    del pre_roll, post_roll
+    segments = plays_to_segments(
+        [play],
         start_buffer=start_buffer,
         end_buffer=end_buffer,
         min_duration=min_segment_length,
-        duration_limit=duration_limit,
+        time_shift=time_shift,
+        long_clip_start_buffer=long_clip_start_buffer,
     )
-    if not window:
-        return None
-    title = str(play.get("play_summary") or play.get("play_type") or "")
-    return Segment(window[0], window[1], title)
+    return segments[0] if segments else None
 
 
-def select_player_moments(
+def select_player_moment_details(
     game: dict[str, Any],
     selector: str,
     events: list[dict[str, Any]],
@@ -324,14 +327,15 @@ def select_player_moments(
     start_buffer: float,
     end_buffer: float,
     min_segment_length: float,
-) -> list[Segment]:
+    time_shift: float,
+    long_clip_start_buffer: float,
+) -> list[tuple[str, dict[str, Any], Segment]]:
     selected_ids = resolve_player_ids(game, selector)
     players = game.get("players") or {}
     by_id = events_by_pbp_id(events)
     home_team_id, away_team_id = team_ids(game, events)
-    duration_limit = video_duration(game)
 
-    segments: list[Segment] = []
+    details: list[tuple[str, dict[str, Any], Segment]] = []
     seen: set[tuple[str, str]] = set()
     for play in game.get("plays") or []:
         play_type = play.get("play_type")
@@ -366,12 +370,47 @@ def select_player_moments(
                 start_buffer=start_buffer,
                 end_buffer=end_buffer,
                 min_segment_length=min_segment_length,
-                duration_limit=duration_limit,
+                time_shift=time_shift,
+                long_clip_start_buffer=long_clip_start_buffer,
             )
             if segment:
-                segments.append(segment)
+                details.append((role, play, segment))
                 seen.add(key)
-    return segments
+    return details
+
+
+def select_player_moments(
+    game: dict[str, Any],
+    selector: str,
+    events: list[dict[str, Any]],
+    *,
+    batter_pre_roll: float,
+    runner_pre_roll: float,
+    pitcher_pre_roll: float,
+    fielder_pre_roll: float,
+    post_roll: float,
+    start_buffer: float,
+    end_buffer: float,
+    min_segment_length: float,
+    time_shift: float = 0.0,
+    long_clip_start_buffer: float = 18.0,
+) -> list[Segment]:
+    details = select_player_moment_details(
+        game,
+        selector,
+        events,
+        batter_pre_roll=batter_pre_roll,
+        runner_pre_roll=runner_pre_roll,
+        pitcher_pre_roll=pitcher_pre_roll,
+        fielder_pre_roll=fielder_pre_roll,
+        post_roll=post_roll,
+        start_buffer=start_buffer,
+        end_buffer=end_buffer,
+        min_segment_length=min_segment_length,
+        time_shift=time_shift,
+        long_clip_start_buffer=long_clip_start_buffer,
+    )
+    return [segment for _, _, segment in details]
 
 
 def main() -> None:
@@ -384,7 +423,7 @@ def main() -> None:
 
     made = 0
     for selector in selectors:
-        segments = select_player_moments(
+        details = select_player_moment_details(
             game,
             selector,
             events,
@@ -396,21 +435,45 @@ def main() -> None:
             start_buffer=args.start_buffer,
             end_buffer=args.end_buffer,
             min_segment_length=args.min_segment_length,
+            time_shift=args.time_shift,
+            long_clip_start_buffer=args.long_clip_start_buffer,
         )
+        segments = [segment for _, _, segment in details]
         if not segments:
             print(f"Skipping {selector}: no matching plays")
             continue
         label = player_label(game, selector)
         output = out_dir / f"{slugify(label)}.mp4"
+        render_output = output
+        temp_dir = None
+        if args.scorebug:
+            temp_dir = tempfile.TemporaryDirectory(prefix="gc-player-overlay-")
+            render_output = Path(temp_dir.name) / "clean.mp4"
         make_reel(
             source,
-            output,
+            render_output,
             segments,
             cookie=cookie,
             reencode=args.reencode,
             max_merge_gap=args.max_merge_gap,
             cache_dir=None if args.no_cache else args.cache_dir,
         )
+        if args.scorebug:
+            assert temp_dir is not None
+            selected = [(role, play) for role, play, _ in details]
+            overlays = write_scorebug_pngs(
+                Path(temp_dir.name),
+                clean_video=render_output,
+                game=game,
+                selected=selected,
+                segments=segments,
+                max_merge_gap=args.max_merge_gap,
+                team_label=args.team_label,
+                opp_label=args.opponent_label or opponent_label(game),
+                description_overrides={},
+            )
+            burn_in_png_overlays(render_output, output, overlays)
+            temp_dir.cleanup()
         print(f"Wrote {output} ({len(segments)} moments)")
         made += 1
     if not made:

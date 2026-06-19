@@ -66,16 +66,14 @@ Default player-reel behavior is intentionally condensed:
 - Pitcher: include strikeout pitches or pitches where the pitcher records an out.
 - Fielder: include out-producing plays where the player is the current defender at the recorded position.
 
-Current timing defaults:
+Current timing defaults use the same clip-boundary logic as the highlight reel (`gc_common.plays_to_segments` with `anchor="auto"`):
 
-- Batter pre-roll: `6s`
-- Runner pre-roll: `4s`
-- Pitcher pre-roll: `5s`
-- Fielder pre-roll: `5s`
-- Post-roll: `4s`
-- Extra start buffer: `6s`
-- Extra end buffer: `4s`
-- Minimum segment length: `18s`
+- Start buffer: `4s`
+- End buffer: `2s`
+- Minimum segment length: `12s`
+- Long GameChanger clip pre-roll: `18s`
+
+Player reels still accept the older role pre-roll flags for CLI compatibility, but selected clips are bounded through `plays_to_segments` so shared plays match the highlight reel timing. This is important for plays like the Andre Leon / Connor Dolginko double play at `9:34`.
 
 Render all:
 
@@ -83,7 +81,9 @@ Render all:
 .venv/bin/python gc_make_player_reels.py \
   gc_output_test/79e5bb9f-f87e-4d02-96ba-6abb4e7777aa/game.json \
   --players all \
-  --out-dir gc_render_test/player_reels
+  --out-dir gc_render_test/player_reels \
+  --reencode \
+  --scorebug
 ```
 
 Render one player:
@@ -92,7 +92,9 @@ Render one player:
 .venv/bin/python gc_make_player_reels.py \
   gc_output_test/79e5bb9f-f87e-4d02-96ba-6abb4e7777aa/game.json \
   --players 11 \
-  --out-dir gc_render_test/player_reels
+  --out-dir gc_render_test/player_reels \
+  --reencode \
+  --scorebug
 ```
 
 Adjust timing if clips start late or include too much dead time:

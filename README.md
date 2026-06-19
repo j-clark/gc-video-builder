@@ -104,7 +104,8 @@ Edit the `Proposed:` lines, then pass the file back with `--description-override
 ```bash
 .venv/bin/python gc_make_highlight_reel.py gc_output/GAME_EVENT_ID/game.json \
   --output gc_render/highlight_reel.mp4 \
-  --reencode
+  --reencode \
+  --scorebug
 ```
 
 The default highlight selection is curated rather than a raw play dump. It prioritizes extra-base hits, run-scoring plate appearances, steals of home, pitching strikeouts, defensive outs, double plays, caught stealing, and any GameChanger exceptional-play clips.
@@ -116,15 +117,19 @@ Render all players:
 ```bash
 .venv/bin/python gc_make_player_reels.py gc_output/GAME_EVENT_ID/game.json \
   --players all \
-  --out-dir gc_render/player_reels
+  --out-dir gc_render/player_reels \
+  --reencode \
+  --scorebug
 ```
 
 Render selected players:
 
 ```bash
 .venv/bin/python gc_make_player_reels.py gc_output/GAME_EVENT_ID/game.json \
-  --players 9,11 \
-  --out-dir gc_render/player_reels
+  --players 9 11 \
+  --out-dir gc_render/player_reels \
+  --reencode \
+  --scorebug
 ```
 
 Player reels are intentionally condensed:
@@ -133,6 +138,8 @@ Player reels are intentionally condensed:
 - runners: plays where they advance
 - pitchers: strikeout pitches or pitches where they record an out
 - fielders: out-producing defensive plays involving that player
+
+Player reels use the same `plays_to_segments` timing path as the highlight reel. Shared plays should cut the same way in both outputs; the default long-clip pre-roll is `18s`.
 
 ## Render Cache
 
