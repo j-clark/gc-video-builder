@@ -261,4 +261,14 @@ With `--game-json` and no explicit `--description`/`--description-file`, the ful
 upload description follows the original Colab shape: `# Top/Bot inning` headers and
 timestamped play summaries. Keep this as the default for the full-game upload.
 
+Uploads create or reuse an unlisted playlist by default and add every uploaded video
+to it. The generated title format is:
+`Tigers vs Cortlandt Nationals — June 19 '26` for home games and
+`Tigers @ Cortlandt Nationals — June 19 '26` for away games.
+
+Use `--playlist-title` to override the whole name, `--playlist-team-name` to change
+the first team in the generated name, or `--no-playlist` to skip playlist updates.
+The OAuth scope is `https://www.googleapis.com/auth/youtube`; old upload-only
+`youtube_token.json` files will need a browser reauthorization.
+
 Keep `client_secret.json` and `youtube_token.json` out of version control and out of logs.

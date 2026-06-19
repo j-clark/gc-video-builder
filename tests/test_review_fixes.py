@@ -1,12 +1,20 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from gc_common import GCClient, plays_to_segment_pairs, select_video_asset, write_play_outputs
 from gc_make_condensed_game import after_bases, overlay_timeline
 from gc_make_full_game import full_game_overlay_timeline
+import gc_upload_youtube
 from gc_make_player_reels import all_player_selectors
-from gc_upload_youtube import colab_youtube_description, standard_video_paths
+from gc_upload_youtube import (
+    add_video_to_playlist,
+    default_playlist_title,
+    get_or_create_playlist,
+    colab_youtube_description,
+    standard_video_paths,
+)
 
 
 class FakeResponse:
@@ -30,6 +38,58 @@ class FakeSession:
         if offset == 0:
             return FakeResponse({"hits": [{"id": index} for index in range(500)], "total_count": 501})
         return FakeResponse({"hits": [{"id": 500}], "total_count": 501})
+
+
+class FakeYoutubeRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def execute(self):
+        return self.payload
+
+
+class FakePlaylistsResource:
+    def __init__(self, items):
+        self.items = items
+        self.insert_body = None
+
+    def list(self, **_kwargs):
+        return FakeYoutubeRequest({"items": self.items})
+
+    def list_next(self, _request, _response):
+        return None
+
+    def insert(self, *, part, body):
+        self.insert_body = {"part": part, "body": body}
+        return FakeYoutubeRequest({"id": "created-playlist"})
+
+
+class FakePlaylistItemsResource:
+    def __init__(self, items=None):
+        self.items = items or []
+        self.insert_bodies = []
+
+    def list(self, **_kwargs):
+        return FakeYoutubeRequest({"items": self.items})
+
+    def list_next(self, _request, _response):
+        return None
+
+    def insert(self, *, part, body):
+        self.insert_bodies.append({"part": part, "body": body})
+        return FakeYoutubeRequest({"id": "playlist-item"})
+
+
+class FakeYoutube:
+    def __init__(self, playlist_items):
+        self.playlists_resource = FakePlaylistsResource(playlist_items)
+        self.playlist_items_resource = FakePlaylistItemsResource()
+
+    def playlists(self):
+        return self.playlists_resource
+
+    def playlistItems(self):
+        return self.playlist_items_resource
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -198,6 +258,135 @@ class ReviewFixTests(unittest.TestCase):
                 ],
                 standard_video_paths(render_dir),
             )
+
+    def test_default_playlist_title_uses_game_metadata(self):
+        game = {
+            "public_details": {
+                "home_away": "home",
+                "start_ts": "2026-06-19T14:00:00.000Z",
+                "timezone": "America/New_York",
+                "opponent_team": {"name": "Cortlandt Nationals 9U"},
+            }
+        }
+
+        self.assertEqual(
+            "Tigers vs Cortlandt Nationals — June 19 '26",
+            default_playlist_title(game, "Tigers"),
+        )
+
+    def test_default_playlist_title_uses_at_for_away_games(self):
+        game = {
+            "public_details": {
+                "home_away": "away",
+                "start_ts": "2026-06-19T14:00:00.000Z",
+                "timezone": "America/New_York",
+                "opponent_team": {"name": "Cortlandt Nationals 9U"},
+            }
+        }
+
+        self.assertEqual(
+            "Tigers @ Cortlandt Nationals — June 19 '26",
+            default_playlist_title(game, "Tigers"),
+        )
+
+    def test_get_or_create_playlist_reuses_existing_playlist(self):
+        youtube = FakeYoutube(
+            [
+                {
+                    "id": "existing-playlist",
+                    "snippet": {"title": "Tigers vs Cortlandt Nationals — June 19 '26"},
+                }
+            ]
+        )
+
+        playlist_id = get_or_create_playlist(youtube, "Tigers vs Cortlandt Nationals — June 19 '26")
+
+        self.assertEqual("existing-playlist", playlist_id)
+        self.assertIsNone(youtube.playlists_resource.insert_body)
+
+    def test_get_or_create_playlist_creates_unlisted_playlist(self):
+        youtube = FakeYoutube([])
+
+        playlist_id = get_or_create_playlist(youtube, "Tigers vs Cortlandt Nationals — June 19 '26")
+
+        self.assertEqual("created-playlist", playlist_id)
+        self.assertEqual(
+            {
+                "part": "snippet,status",
+                "body": {
+                    "snippet": {"title": "Tigers vs Cortlandt Nationals — June 19 '26"},
+                    "status": {"privacyStatus": "unlisted"},
+                },
+            },
+            youtube.playlists_resource.insert_body,
+        )
+
+    def test_add_video_to_playlist_skips_existing_video_id(self):
+        youtube = FakeYoutube([])
+        existing = {"video-1"}
+
+        add_video_to_playlist(youtube, "playlist-1", "video-1", existing)
+
+        self.assertEqual([], youtube.playlist_items_resource.insert_bodies)
+
+    def test_add_video_to_playlist_inserts_new_video_id(self):
+        youtube = FakeYoutube([])
+        existing = set()
+
+        add_video_to_playlist(youtube, "playlist-1", "video-1", existing)
+
+        self.assertEqual({"video-1"}, existing)
+        self.assertEqual(
+            [
+                {
+                    "part": "snippet",
+                    "body": {
+                        "snippet": {
+                            "playlistId": "playlist-1",
+                            "resourceId": {
+                                "kind": "youtube#video",
+                                "videoId": "video-1",
+                            },
+                        }
+                    },
+                }
+            ],
+            youtube.playlist_items_resource.insert_bodies,
+        )
+
+    def test_main_validates_playlist_title_before_oauth(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            video = Path(tmp_name) / "video.mp4"
+            video.write_text("", encoding="utf-8")
+
+            with mock.patch(
+                "gc_upload_youtube.parse_args",
+                return_value=type(
+                    "Args",
+                    (),
+                    {
+                        "videos": [str(video)],
+                        "render_dir": None,
+                        "include_standard_renders": False,
+                        "game_json": None,
+                        "client_secrets": "client_secret.json",
+                        "token_file": "youtube_token.json",
+                        "title_prefix": "",
+                        "description": None,
+                        "description_file": None,
+                        "playlist_title": None,
+                        "playlist_team_name": "Tigers",
+                        "no_playlist": False,
+                        "tags": "GameChanger,baseball,9U",
+                        "category_id": "17",
+                        "privacy_status": "unlisted",
+                    },
+                )(),
+            ), mock.patch("gc_upload_youtube.youtube_service") as youtube_service:
+                with self.assertRaises(SystemExit):
+                    gc_upload_youtube.main()
+
+            youtube_service.assert_not_called()
 
 
 if __name__ == "__main__":

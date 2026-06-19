@@ -173,6 +173,7 @@ The upload script supports unlisted uploads using the YouTube Data API:
 .venv/bin/python gc_upload_youtube.py gc_render/player_reels/*.mp4 \
   --client-secrets client_secret.json \
   --token-file youtube_token.json \
+  --no-playlist \
   --privacy-status unlisted
 ```
 
@@ -188,9 +189,19 @@ Upload the standard render set, including `full_game_scorebug.mp4` when present:
   --privacy-status unlisted
 ```
 
+By default, uploads create or reuse an unlisted playlist named from the game metadata,
+for example `Tigers vs Cortlandt Nationals — June 19 '26` for home games or
+`Tigers @ Cortlandt Nationals — June 19 '26` for away games, then add every uploaded
+video to that playlist. Override the generated name with `--playlist-title`, override
+the team side with `--playlist-team-name`, or pass `--no-playlist` to skip playlist
+updates.
+
 When `--game-json` is provided and no explicit `--description` or `--description-file` is set, the full-game upload gets a Colab-style description: inning headers plus timestamped play summaries.
 
-Keep `client_secret.json` and `youtube_token.json` local.
+Keep `client_secret.json` and `youtube_token.json` local. The uploader needs the
+broader YouTube OAuth scope because it uploads videos and manages playlists. If
+`youtube_token.json` was created by an older upload-only version, the next run will
+ask you to authorize again.
 
 ## Verification
 

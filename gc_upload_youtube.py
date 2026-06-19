@@ -4,14 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import json
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from gc_common import format_timestamp, load_json
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = ["https://www.googleapis.com/auth/youtube"]
 COLAB_DESCRIPTION_EXCLUDED_TYPES = {"caught_stealing", "stole_base", "wild_pitch"}
+AGE_SUFFIX_RE = re.compile(r"\b(?:\d{1,2}U|U\d{1,2})\b", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +34,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--title-prefix", default="")
     parser.add_argument("--description", help="Description to use for every uploaded video.")
     parser.add_argument("--description-file", help="File containing a description to use for every uploaded video.")
+    parser.add_argument("--playlist-title", help="Playlist title. Defaults to '<team> vs <opponent> — <date>' from --game-json.")
+    parser.add_argument("--playlist-team-name", default="Tigers", help="Team name to use when generating a playlist title.")
+    parser.add_argument("--no-playlist", action="store_true", help="Upload videos without creating/updating a playlist.")
     parser.add_argument("--tags", default="GameChanger,baseball,9U")
     parser.add_argument("--category-id", default="17", help="17 is Sports.")
     parser.add_argument("--privacy-status", default="unlisted", choices=["private", "unlisted", "public"])
@@ -44,7 +52,11 @@ def youtube_service(client_secrets: str, token_file: str):
     creds = None
     token_path = Path(token_file)
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        token_info = json.loads(token_path.read_text(encoding="utf-8"))
+        token_scopes = token_info.get("scopes")
+        granted_scopes = set(token_scopes.split() if isinstance(token_scopes, str) else token_scopes or [])
+        if set(SCOPES).issubset(granted_scopes):
+            creds = Credentials.from_authorized_user_info(token_info, SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -123,6 +135,58 @@ def colab_youtube_description(game: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def clean_team_name(value: str) -> str:
+    value = AGE_SUFFIX_RE.sub("", value)
+    return " ".join(value.split()).strip()
+
+
+def opponent_name(game: dict[str, Any]) -> str:
+    name = (
+        ((game.get("public_details") or {}).get("opponent_team") or {}).get("name")
+        or ((game.get("schedule_event") or {}).get("pregame_data") or {}).get("opponent_name")
+        or "Opponent"
+    )
+    return clean_team_name(str(name)) or "Opponent"
+
+
+def parse_datetime(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def game_start_datetime(game: dict[str, Any]) -> dt.datetime:
+    public_details = game.get("public_details") or {}
+    schedule_event = (game.get("schedule_event") or {}).get("event") or {}
+    value = (
+        public_details.get("start_ts")
+        or ((schedule_event.get("start") or {}).get("datetime"))
+        or ((schedule_event.get("arrive") or {}).get("datetime"))
+        or public_details.get("end_ts")
+    )
+    parsed = parse_datetime(value)
+    if parsed is None:
+        raise ValueError("Could not determine game date for playlist title.")
+    timezone = public_details.get("timezone")
+    if timezone:
+        parsed = parsed.astimezone(ZoneInfo(str(timezone)))
+    return parsed
+
+
+def format_playlist_date(value: dt.datetime) -> str:
+    return f"{value.strftime('%B')} {value.day} '{value.strftime('%y')}"
+
+
+def default_playlist_title(game: dict[str, Any], team_name: str) -> str:
+    home_away = (
+        (game.get("public_details") or {}).get("home_away")
+        or (game.get("game_summary") or {}).get("home_away")
+        or "home"
+    )
+    separator = "@" if str(home_away).lower() == "away" else "vs"
+    return f"{clean_team_name(team_name)} {separator} {opponent_name(game)} — {format_playlist_date(game_start_datetime(game))}"
+
+
 def is_full_game_video(video_path: Path) -> bool:
     return video_path.stem.startswith("full_game")
 
@@ -166,6 +230,80 @@ def upload_one(youtube, video_path: Path, args: argparse.Namespace, description:
     return response["id"]
 
 
+def iter_youtube_pages(request, list_next):
+    while request is not None:
+        response = request.execute()
+        yield response
+        request = list_next(request, response)
+
+
+def find_playlist(youtube, title: str) -> str | None:
+    request = youtube.playlists().list(part="snippet", mine=True, maxResults=50)
+    for response in iter_youtube_pages(request, youtube.playlists().list_next):
+        for item in response.get("items", []):
+            if (item.get("snippet") or {}).get("title") == title:
+                return item.get("id")
+    return None
+
+
+def create_playlist(youtube, title: str) -> str:
+    response = youtube.playlists().insert(
+        part="snippet,status",
+        body={
+            "snippet": {"title": title},
+            "status": {"privacyStatus": "unlisted"},
+        },
+    ).execute()
+    return response["id"]
+
+
+def get_or_create_playlist(youtube, title: str) -> str:
+    playlist_id = find_playlist(youtube, title)
+    if playlist_id:
+        print(f"Using playlist: {title}")
+        return playlist_id
+    playlist_id = create_playlist(youtube, title)
+    print(f"Created playlist: {title}")
+    return playlist_id
+
+
+def playlist_video_ids(youtube, playlist_id: str) -> set[str]:
+    video_ids: set[str] = set()
+    request = youtube.playlistItems().list(part="contentDetails", playlistId=playlist_id, maxResults=50)
+    for response in iter_youtube_pages(request, youtube.playlistItems().list_next):
+        for item in response.get("items", []):
+            video_id = (item.get("contentDetails") or {}).get("videoId")
+            if video_id:
+                video_ids.add(video_id)
+    return video_ids
+
+
+def add_video_to_playlist(youtube, playlist_id: str, video_id: str, existing_video_ids: set[str]) -> None:
+    if video_id in existing_video_ids:
+        return
+    youtube.playlistItems().insert(
+        part="snippet",
+        body={
+            "snippet": {
+                "playlistId": playlist_id,
+                "resourceId": {
+                    "kind": "youtube#video",
+                    "videoId": video_id,
+                },
+            }
+        },
+    ).execute()
+    existing_video_ids.add(video_id)
+
+
+def resolve_playlist_title(args: argparse.Namespace, game: dict[str, Any] | None) -> str:
+    if args.playlist_title:
+        return args.playlist_title
+    if game:
+        return default_playlist_title(game, args.playlist_team_name)
+    raise SystemExit("Pass --game-json or --playlist-title, or use --no-playlist.")
+
+
 def main() -> None:
     args = parse_args()
     videos = resolve_video_paths(args)
@@ -175,10 +313,21 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Missing video file: {missing[0]}")
     game = load_json(args.game_json) if args.game_json else None
+    playlist_id = None
+    playlist_title = None
+    existing_playlist_video_ids: set[str] = set()
+    if not args.no_playlist:
+        playlist_title = resolve_playlist_title(args, game)
     youtube = youtube_service(args.client_secrets, args.token_file)
+    if playlist_title:
+        playlist_id = get_or_create_playlist(youtube, playlist_title)
+        existing_playlist_video_ids = playlist_video_ids(youtube, playlist_id)
     for path in videos:
         video_id = upload_one(youtube, path, args, description_for_video(path, args, game))
         print(f"{path}: https://youtu.be/{video_id}")
+        if playlist_id:
+            add_video_to_playlist(youtube, playlist_id, video_id, existing_playlist_video_ids)
+            print(f"Added {path.name} to playlist.")
 
 
 if __name__ == "__main__":
