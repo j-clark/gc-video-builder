@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,35 +128,60 @@ class GCClient:
         return self.get(f"/teams/{team_id}/season-stats")
 
     def search_clips(self, team_id: str, event_id: str | None = None, limit: int = 500) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "match_all": {"team_id": team_id},
-            "sort": [{"by": "timestamp", "order": "asc"}],
-            "limit": limit,
-            "select": {"kind": "event", "include_totals": True},
-            "offset": 0,
-            "paging": "page",
-        }
-        if event_id:
-            body["match_all"]["event_id"] = event_id
-        response = self.session.post(
-            f"{BASE_URL}/clips/search",
-            headers={
-                "content-type": "application/vnd.gc.com.video_clip_search_query+json; version=0.0.0",
-                "accept": "application/vnd.gc.com.video_clip_search_results+json; version=0.1.0",
-                "x-gc-features": "lazy-sync",
-            },
-            json=body,
-            timeout=45,
-        )
-        if response.status_code >= 400:
-            raise GCError(f"POST /clips/search failed: {response.status_code} {response.text[:300]}")
-        return response.json()
+        all_hits: list[dict[str, Any]] = []
+        merged_response: dict[str, Any] | None = None
+        total_count: int | None = None
+
+        while True:
+            body: dict[str, Any] = {
+                "match_all": {"team_id": team_id},
+                "sort": [{"by": "timestamp", "order": "asc"}],
+                "limit": limit,
+                "select": {"kind": "event", "include_totals": True},
+                "offset": len(all_hits),
+                "paging": "page",
+            }
+            if event_id:
+                body["match_all"]["event_id"] = event_id
+            response = self.session.post(
+                f"{BASE_URL}/clips/search",
+                headers={
+                    "content-type": "application/vnd.gc.com.video_clip_search_query+json; version=0.0.0",
+                    "accept": "application/vnd.gc.com.video_clip_search_results+json; version=0.1.0",
+                    "x-gc-features": "lazy-sync",
+                },
+                json=body,
+                timeout=45,
+            )
+            if response.status_code >= 400:
+                raise GCError(f"POST /clips/search failed: {response.status_code} {response.text[:300]}")
+
+            page = response.json()
+            if merged_response is None:
+                merged_response = dict(page)
+            page_hits = page.get("hits") or []
+            if total_count is None and page.get("total_count") is not None:
+                total_count = int(page["total_count"])
+            all_hits.extend(page_hits)
+
+            if not page_hits or len(page_hits) < limit:
+                break
+            if total_count is not None and len(all_hits) >= total_count:
+                break
+
+        merged_response = merged_response or {}
+        merged_response["hits"] = all_hits
+        if total_count is not None:
+            merged_response["total_count"] = total_count
+        return merged_response
 
 
-def safe_get(call, default):
+def safe_get(call, default, *, label: str | None = None):
     try:
         return call()
-    except Exception:
+    except Exception as exc:
+        context = f" for {label}" if label else ""
+        print(f"Warning: optional GameChanger fetch failed{context}: {exc}", file=sys.stderr)
         return default
 
 
@@ -243,8 +269,8 @@ def select_video_asset(
     candidates.extend(a for a in event_assets if a.get("schedule_event_id") == event_id)
     if not candidates:
         return None
-    candidates.sort(key=lambda a: (a.get("created_at") or "", a.get("duration") or 0), reverse=True)
-    merged = dict(candidates[-1])
+    candidates.sort(key=lambda a: (a.get("created_at") or "", a.get("duration") or 0))
+    merged: dict[str, Any] = {}
     for candidate in candidates:
         merged.update({k: v for k, v in candidate.items() if v is not None})
     return merged
@@ -283,6 +309,8 @@ def write_play_outputs(out_dir: Path, plays: list[dict[str, Any]]) -> None:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
+    else:
+        csv_path.write_text("", encoding="utf-8")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# Plays\n\n")
         last_group = None
@@ -457,7 +485,7 @@ def make_reel(
         run(concat_cmd)
 
 
-def plays_to_segments(
+def plays_to_segment_pairs(
     plays: list[dict[str, Any]],
     *,
     start_buffer: float = 0.0,
@@ -468,8 +496,9 @@ def plays_to_segments(
     long_clip_threshold: float = 12.0,
     long_clip_start_buffer: float = 18.0,
     long_clip_start_buffer_overrides: dict[int, float] | None = None,
-) -> list[Segment]:
-    segments = []
+    duration_limit: float | None = None,
+) -> list[tuple[dict[str, Any], Segment]]:
+    pairs = []
     long_clip_start_buffer_overrides = long_clip_start_buffer_overrides or {}
     for play in plays:
         anchor_value = None
@@ -508,11 +537,47 @@ def plays_to_segments(
             start_buffer=effective_start_buffer,
             end_buffer=end_buffer,
             min_duration=min_duration,
+            duration_limit=duration_limit,
         )
         if not window:
             continue
-        segments.append(Segment(window[0], window[1], str(play.get("play_summary") or play.get("play_type") or "")))
-    return segments
+        pairs.append(
+            (
+                play,
+                Segment(window[0], window[1], str(play.get("play_summary") or play.get("play_type") or "")),
+            )
+        )
+    return pairs
+
+
+def plays_to_segments(
+    plays: list[dict[str, Any]],
+    *,
+    start_buffer: float = 0.0,
+    end_buffer: float = 0.0,
+    min_duration: float = 0.0,
+    time_shift: float = 0.0,
+    anchor: str = "auto",
+    long_clip_threshold: float = 12.0,
+    long_clip_start_buffer: float = 18.0,
+    long_clip_start_buffer_overrides: dict[int, float] | None = None,
+    duration_limit: float | None = None,
+) -> list[Segment]:
+    return [
+        segment
+        for _, segment in plays_to_segment_pairs(
+            plays,
+            start_buffer=start_buffer,
+            end_buffer=end_buffer,
+            min_duration=min_duration,
+            time_shift=time_shift,
+            anchor=anchor,
+            long_clip_threshold=long_clip_threshold,
+            long_clip_start_buffer=long_clip_start_buffer,
+            long_clip_start_buffer_overrides=long_clip_start_buffer_overrides,
+            duration_limit=duration_limit,
+        )
+    ]
 
 
 def select_player_plays(game: dict[str, Any], player_selector: str) -> list[dict[str, Any]]:

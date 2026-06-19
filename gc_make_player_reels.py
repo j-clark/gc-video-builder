@@ -71,11 +71,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default="gc_output/player_reels")
     parser.add_argument("--reencode", action="store_true", help="Re-encode instead of stream-copying clips.")
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--batter-pre-roll", type=float, default=6.0)
-    parser.add_argument("--runner-pre-roll", type=float, default=4.0)
-    parser.add_argument("--pitcher-pre-roll", type=float, default=5.0)
-    parser.add_argument("--fielder-pre-roll", type=float, default=5.0)
-    parser.add_argument("--post-roll", type=float, default=4.0)
     parser.add_argument("--start-buffer", type=float, default=4.0, help="Additional seconds to subtract from every segment start.")
     parser.add_argument("--end-buffer", type=float, default=2.0, help="Additional seconds to add to every segment end.")
     parser.add_argument("--min-segment-length", type=float, default=12.0, help="Minimum seconds to keep for each selected moment.")
@@ -105,10 +100,14 @@ def player_label(game: dict, selector: str) -> str:
 def all_player_selectors(game: dict) -> list[str]:
     ids: set[str] = set()
     known_player_ids = set((game.get("players") or {}).keys())
+    team_ids = set(game.get("team_player_ids") or [])
+    opponent_ids = set(game.get("opponent_player_ids") or [])
     for play in game.get("plays") or []:
         ids.update(play.get("mentioned_player_ids") or [])
-    if known_player_ids:
-        ids = ids.intersection(known_player_ids)
+    if team_ids:
+        ids = ids.intersection(team_ids)
+    elif known_player_ids:
+        ids = ids.intersection(known_player_ids - opponent_ids)
     return sorted(ids)
 
 
@@ -293,16 +292,14 @@ def video_duration(game: dict[str, Any]) -> float | None:
 
 def moment_segment(
     play: dict[str, Any],
-    pre_roll: float,
-    post_roll: float,
     *,
     start_buffer: float,
     end_buffer: float,
     min_segment_length: float,
     time_shift: float,
     long_clip_start_buffer: float,
+    duration_limit: float | None,
 ) -> Segment | None:
-    del pre_roll, post_roll
     segments = plays_to_segments(
         [play],
         start_buffer=start_buffer,
@@ -310,6 +307,7 @@ def moment_segment(
         min_duration=min_segment_length,
         time_shift=time_shift,
         long_clip_start_buffer=long_clip_start_buffer,
+        duration_limit=duration_limit,
     )
     return segments[0] if segments else None
 
@@ -319,11 +317,6 @@ def select_player_moment_details(
     selector: str,
     events: list[dict[str, Any]],
     *,
-    batter_pre_roll: float,
-    runner_pre_roll: float,
-    pitcher_pre_roll: float,
-    fielder_pre_roll: float,
-    post_roll: float,
     start_buffer: float,
     end_buffer: float,
     min_segment_length: float,
@@ -334,6 +327,7 @@ def select_player_moment_details(
     players = game.get("players") or {}
     by_id = events_by_pbp_id(events)
     home_team_id, away_team_id = team_ids(game, events)
+    duration_limit = video_duration(game)
 
     details: list[tuple[str, dict[str, Any], Segment]] = []
     seen: set[tuple[str, str]] = set()
@@ -344,19 +338,14 @@ def select_player_moment_details(
 
         for player_id in selected_ids:
             role = None
-            pre_roll = batter_pre_roll
             if play_type in ON_BASE_TYPES and mentioned and mentioned[0] == player_id:
                 role = "batter"
-                pre_roll = batter_pre_roll
             elif player_advanced(play, player_id, raw_event) or player_name_advanced(play, players.get(player_id, {})):
                 role = "runner"
-                pre_roll = runner_pre_roll
             elif play_type in OUT_TYPES and pitcher_for_play(play, events, home_team_id, away_team_id) == player_id:
                 role = "pitcher"
-                pre_roll = pitcher_pre_roll
             elif player_fielded_out(play, player_id, players.get(player_id, {}), raw_event, events, home_team_id, away_team_id):
                 role = "fielder"
-                pre_roll = fielder_pre_roll
 
             if not role:
                 continue
@@ -365,13 +354,12 @@ def select_player_moment_details(
                 continue
             segment = moment_segment(
                 play,
-                pre_roll,
-                post_roll,
                 start_buffer=start_buffer,
                 end_buffer=end_buffer,
                 min_segment_length=min_segment_length,
                 time_shift=time_shift,
                 long_clip_start_buffer=long_clip_start_buffer,
+                duration_limit=duration_limit,
             )
             if segment:
                 details.append((role, play, segment))
@@ -384,11 +372,6 @@ def select_player_moments(
     selector: str,
     events: list[dict[str, Any]],
     *,
-    batter_pre_roll: float,
-    runner_pre_roll: float,
-    pitcher_pre_roll: float,
-    fielder_pre_roll: float,
-    post_roll: float,
     start_buffer: float,
     end_buffer: float,
     min_segment_length: float,
@@ -399,11 +382,6 @@ def select_player_moments(
         game,
         selector,
         events,
-        batter_pre_roll=batter_pre_roll,
-        runner_pre_roll=runner_pre_roll,
-        pitcher_pre_roll=pitcher_pre_roll,
-        fielder_pre_roll=fielder_pre_roll,
-        post_roll=post_roll,
         start_buffer=start_buffer,
         end_buffer=end_buffer,
         min_segment_length=min_segment_length,
@@ -427,11 +405,6 @@ def main() -> None:
             game,
             selector,
             events,
-            batter_pre_roll=args.batter_pre_roll,
-            runner_pre_roll=args.runner_pre_roll,
-            pitcher_pre_roll=args.pitcher_pre_roll,
-            fielder_pre_roll=args.fielder_pre_roll,
-            post_roll=args.post_roll,
             start_buffer=args.start_buffer,
             end_buffer=args.end_buffer,
             min_segment_length=args.min_segment_length,

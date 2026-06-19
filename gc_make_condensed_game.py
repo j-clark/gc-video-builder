@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from gc_common import Segment, load_json, make_reel, plays_to_segments, run, video_source_from_game
+from gc_common import Segment, load_json, make_reel, plays_to_segment_pairs, plays_to_segments, run, video_source_from_game
 
 
 PA_OUTCOME_TYPES = {
@@ -48,7 +48,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-segment-length", type=float, default=12.0, help="Minimum seconds to keep for each selected play.")
     parser.add_argument("--time-shift", type=float, default=0.0, help="Shift every play timestamp by this many seconds before cutting.")
     parser.add_argument("--long-clip-start-buffer", type=float, default=18.0, help="Pre-roll to use for longer GameChanger clips.")
-    parser.add_argument("--batted-ball-start-buffer", type=float, default=18.0, help="Deprecated; clip timing now uses the shared long-clip logic for all play types.")
     parser.add_argument("--extra-start-play-indexes", default="", help="Comma-separated raw play indexes that need extra pre-roll.")
     parser.add_argument("--extra-start-buffer", type=float, default=18.0, help="Pre-roll for plays listed in --extra-start-play-indexes.")
     parser.add_argument("--cache-dir", default="gc_render_cache/segments", help="Directory for reusable local clip segments.")
@@ -583,6 +582,12 @@ def after_bases(play: dict[str, Any], before: set[int]) -> set[int]:
     play_type = str(play.get("play_type") or "")
     after = set(before)
 
+    scoring_summary = re.sub(r"scores on steal of home", "", summary, flags=re.IGNORECASE)
+    for _ in re.finditer(r"\bscores\b", scoring_summary, flags=re.IGNORECASE):
+        occupied = sorted(after, reverse=True)
+        if occupied:
+            after.discard(occupied[0])
+
     for match in re.finditer(r"(?:remains at|held up at|advances to)\s+([123](?:st|nd|rd))", summary):
         base = ordinal_base(match.group(1))
         if base:
@@ -612,9 +617,6 @@ def after_bases(play: dict[str, Any], before: set[int]) -> set[int]:
         previous = previous_base(base) if base else None
         if previous:
             after.discard(previous)
-
-    if " scores" in summary:
-        after.discard(3)
 
     return {base for base in after if base in {1, 2, 3}}
 
@@ -654,6 +656,8 @@ def overlay_timeline(
     *,
     max_merge_gap: float,
 ) -> list[tuple[float, float, dict[str, Any]]]:
+    if len(selected) != len(segments):
+        raise ValueError(f"Overlay inputs are misaligned: {len(selected)} selected plays for {len(segments)} segments")
     paired = sorted(zip(segments, [play for _, play in selected]), key=lambda item: (item[0].start, item[0].end))
     if not paired:
         return []
@@ -959,6 +963,20 @@ def main() -> None:
     )
     if args.max_plays is not None:
         selected = selected[: args.max_plays]
+    plays = [play for _, play in selected]
+    segment_pairs = plays_to_segment_pairs(
+        plays,
+        start_buffer=args.start_buffer,
+        end_buffer=args.end_buffer,
+        min_duration=args.min_segment_length,
+        time_shift=args.time_shift,
+        long_clip_start_buffer=args.long_clip_start_buffer,
+        long_clip_start_buffer_overrides=long_clip_start_buffer_override_map(extra_start_play_indexes, args.extra_start_buffer),
+    )
+    selected_by_play_id = {id(play): (reason, play) for reason, play in selected}
+    skipped_count = len(selected) - len(segment_pairs)
+    selected = [selected_by_play_id[id(play)] for play, _ in segment_pairs]
+    segments = [segment for _, segment in segment_pairs]
     description_overrides = read_description_overrides(Path(args.description_overrides) if args.description_overrides else None)
     descriptions_output = Path(args.descriptions_output) if args.descriptions_output else None
     if args.descriptions_only and descriptions_output is None:
@@ -970,20 +988,12 @@ def main() -> None:
         write_selected_plays(plays_output, selected)
         print(f"Wrote {descriptions_output}")
         print(f"Wrote {plays_output}")
+        if skipped_count:
+            print(f"Skipped {skipped_count} selected plays with no usable timing")
         return
 
     source, cookie = video_source_from_game(game, args.video)
-    plays = [play for _, play in selected]
     output = Path(args.output)
-    segments = plays_to_segments(
-        plays,
-        start_buffer=args.start_buffer,
-        end_buffer=args.end_buffer,
-        min_duration=args.min_segment_length,
-        time_shift=args.time_shift,
-        long_clip_start_buffer=args.long_clip_start_buffer,
-        long_clip_start_buffer_overrides=long_clip_start_buffer_override_map(extra_start_play_indexes, args.extra_start_buffer),
-    )
     render_output = output
     temp_dir = None
     if args.scorebug:
@@ -1017,7 +1027,9 @@ def main() -> None:
         burn_in_png_overlays(render_output, output, overlays)
         temp_dir.cleanup()
     write_selected_plays(plays_output, selected)
-    print(f"Wrote {args.output} ({len(plays)} plays)")
+    print(f"Wrote {args.output} ({len(selected)} plays)")
+    if skipped_count:
+        print(f"Skipped {skipped_count} selected plays with no usable timing")
     print(f"Wrote {plays_output}")
     if descriptions_output is not None:
         print(f"Wrote {descriptions_output}")
