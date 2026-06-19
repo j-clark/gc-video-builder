@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from gc_common import load_json, make_reel, plays_to_segments, video_source_from_game
+from gc_common import load_json, make_reel, plays_to_segment_pairs, plays_to_segments, video_source_from_game
 from gc_make_condensed_game import (
     burn_in_png_overlays,
     opponent_label,
@@ -305,7 +305,7 @@ def main() -> None:
     plays = [play for _, play in selected]
 
     output = Path(args.output)
-    segments = plays_to_segments(
+    segment_pairs = plays_to_segment_pairs(
         plays,
         start_buffer=args.start_buffer,
         end_buffer=args.end_buffer,
@@ -313,6 +313,10 @@ def main() -> None:
         time_shift=args.time_shift,
         long_clip_start_buffer=args.long_clip_start_buffer,
     )
+    selected_by_play_id = {id(play): (reason, play) for reason, play in selected}
+    skipped_count = len(selected) - len(segment_pairs)
+    selected = [selected_by_play_id[id(play)] for play, _ in segment_pairs]
+    segments = [segment for _, segment in segment_pairs]
     render_output = output
     temp_dir = None
     if args.scorebug:
@@ -344,7 +348,9 @@ def main() -> None:
         temp_dir.cleanup()
     plays_output = Path(args.plays_output) if args.plays_output else output.with_suffix(".plays.txt")
     write_selected_plays(plays_output, selected)
-    print(f"Wrote {args.output} ({len(plays)} plays)")
+    print(f"Wrote {args.output} ({len(selected)} plays)")
+    if skipped_count:
+        print(f"Skipped {skipped_count} selected plays with no usable timing")
     print(f"Wrote {plays_output}")
 
 

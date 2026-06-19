@@ -51,25 +51,28 @@ def main() -> None:
     out_dir = Path(args.out_dir) / event_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    schedule = safe_get(lambda: client.get_schedule(team_id), [])
-    game_summaries = safe_get(lambda: client.get_game_summaries(team_id), [])
-    public_details = safe_get(lambda: client.get_public_game_details(event_id), {})
+    schedule = safe_get(lambda: client.get_schedule(team_id), [], label="schedule")
+    game_summaries = safe_get(lambda: client.get_game_summaries(team_id), [], label="game summaries")
+    public_details = safe_get(lambda: client.get_public_game_details(event_id), {}, label="public game details")
     clips_response = client.search_clips(team_id, event_id)
     clips = clips_response.get("hits") or []
+    clips_total_count = clips_response.get("total_count", len(clips))
+    if clips_total_count is not None and len(clips) < int(clips_total_count):
+        raise GCError(f"Fetched {len(clips)} clips but GameChanger reported {clips_total_count}.")
 
     game_stream_id = None
     matching_summary = next((s for s in game_summaries if s.get("event_id") == event_id), None)
     if matching_summary:
         game_stream_id = (matching_summary.get("game_stream") or {}).get("id")
-    game_stream_id = game_stream_id or safe_get(lambda: client.get_best_game_stream_id(event_id), None)
+    game_stream_id = game_stream_id or safe_get(lambda: client.get_best_game_stream_id(event_id), None, label="best game stream id")
 
-    stream_events = safe_get(lambda: client.get_game_stream_events(game_stream_id), []) if game_stream_id else []
+    stream_events = safe_get(lambda: client.get_game_stream_events(game_stream_id), [], label="game stream events") if game_stream_id else []
     events_by_pbp_id = stream_events_by_pbp_id(stream_events)
 
-    team_players = safe_get(lambda: client.get_players(team_id), [])
-    public_players = safe_get(lambda: client.get_public_players(public_team_id), []) if public_team_id else []
+    team_players = safe_get(lambda: client.get_players(team_id), [], label="team players")
+    public_players = safe_get(lambda: client.get_public_players(public_team_id), [], label="public players") if public_team_id else []
     opponent_id = (matching_summary or {}).get("game_stream", {}).get("opponent_id")
-    opponent_players = safe_get(lambda: client.get_opponent_roster(team_id, opponent_id), []) if opponent_id else []
+    opponent_players = safe_get(lambda: client.get_opponent_roster(team_id, opponent_id), [], label="opponent roster") if opponent_id else []
     players = build_player_map(team_players, public_players, opponent_players)
     team_player_ids = sorted(
         {
@@ -87,9 +90,9 @@ def main() -> None:
         }
     )
 
-    team_assets = safe_get(lambda: client.get_team_assets(team_id), [])
-    event_assets = safe_get(lambda: client.get_event_assets(team_id, event_id), [])
-    playback_assets = safe_get(lambda: client.get_event_playback_assets(team_id, event_id), [])
+    team_assets = safe_get(lambda: client.get_team_assets(team_id), [], label="team video assets")
+    event_assets = safe_get(lambda: client.get_event_assets(team_id, event_id), [], label="event video assets")
+    playback_assets = safe_get(lambda: client.get_event_playback_assets(team_id, event_id), [], label="event playback assets")
     video_asset = select_video_asset(team_assets, event_assets, event_id)
 
     plays = []
@@ -140,7 +143,7 @@ def main() -> None:
         "public_recap_url": public_recap_url,
         "youtube_url": args.youtube_url,
         "game_stream_id": game_stream_id,
-        "clips_total_count": clips_response.get("total_count", len(clips)),
+        "clips_total_count": clips_total_count,
         "schedule_event": next((e for e in schedule if (e.get("event") or {}).get("id") == event_id), None),
         "game_summary": matching_summary,
         "public_details": public_details,

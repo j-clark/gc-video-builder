@@ -143,6 +143,18 @@ Player reels are intentionally condensed:
 
 Player reels use the same shared timing path as highlight and condensed reels. The default long-clip pre-roll is `18s`.
 
+## Full Game
+
+Render the full game with scorebug and play descriptions burned into the original game timeline:
+
+```bash
+.venv/bin/python gc_make_full_game.py gc_output/GAME_EVENT_ID/game.json \
+  --output gc_render/full_game_scorebug.mp4 \
+  --description-overrides gc_render/condensed_game_description_review_cleaned.md
+```
+
+This renderer does not concatenate selected segments. It keeps the full stream intact and schedules the same scorebug/caption overlays around selected play windows.
+
 ## Render Cache
 
 Render scripts use `gc_render_cache/segments` by default. The cache key includes the source, start/end times, and re-encode setting. Re-running with the same timing should reuse local segment files instead of rereading the GameChanger HLS stream.
@@ -164,6 +176,20 @@ The upload script supports unlisted uploads using the YouTube Data API:
   --privacy-status unlisted
 ```
 
+Upload the standard render set, including `full_game_scorebug.mp4` when present:
+
+```bash
+.venv/bin/python gc_upload_youtube.py \
+  --render-dir gc_render \
+  --include-standard-renders \
+  --game-json gc_output/GAME_EVENT_ID/game.json \
+  --client-secrets client_secret.json \
+  --token-file youtube_token.json \
+  --privacy-status unlisted
+```
+
+When `--game-json` is provided and no explicit `--description` or `--description-file` is set, the full-game upload gets a Colab-style description: inning headers plus timestamped play summaries.
+
 Keep `client_secret.json` and `youtube_token.json` local.
 
 ## Verification
@@ -177,7 +203,14 @@ Compile all scripts:
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \
+  gc_make_full_game.py \
   gc_upload_youtube.py
+```
+
+Run unit tests:
+
+```bash
+.venv/bin/python -m unittest discover -s tests
 ```
 
 Probe a render:

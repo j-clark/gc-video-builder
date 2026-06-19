@@ -18,6 +18,7 @@ This is a standalone workspace for pulling GameChanger baseball metadata and ren
 - `gc_make_player_reels.py`: creates per-player reels.
 - `gc_make_highlight_reel.py`: creates selected play-type highlight reel.
 - `gc_make_condensed_game.py`: creates a condensed game.
+- `gc_make_full_game.py`: burns scorebug/caption overlays into the full-length game stream.
 - `gc_upload_youtube.py`: uploads rendered MP4s to YouTube; not fully tested yet.
 - `requirements-gc.txt`: Python dependencies.
 
@@ -73,7 +74,7 @@ Current timing defaults use the same clip-boundary logic as the highlight reel (
 - Minimum segment length: `12s`
 - Long GameChanger clip pre-roll: `18s`
 
-Player reels still accept the older role pre-roll flags for CLI compatibility, but selected clips are bounded through `plays_to_segments` so shared plays match the highlight reel timing. This is important for plays like the Andre Leon / Connor Dolginko double play at `9:34`.
+Player reels intentionally use the same timing knobs as highlight and condensed reels, so shared plays use the same anchor logic across outputs. This is important for plays like the Andre Leon / Connor Dolginko double play at `9:34`.
 
 Render all:
 
@@ -115,6 +116,10 @@ Adjust timing if clips start late or include too much dead time:
 
 .venv/bin/python gc_make_condensed_game.py GAME_JSON \
   --output gc_render_test/condensed_game.mp4
+
+.venv/bin/python gc_make_full_game.py GAME_JSON \
+  --output gc_render_test/full_game_scorebug.mp4 \
+  --description-overrides gc_render_test/condensed_game_description_review_cleaned.md
 ```
 
 Both scripts support the same render cache and timing knobs:
@@ -209,6 +214,7 @@ Compile scripts:
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \
+  gc_make_full_game.py \
   gc_upload_youtube.py
 ```
 
@@ -237,13 +243,22 @@ ps -eo pid,ppid,command | rg 'gc_make_.*reel|gc_make_condensed_game|ffmpeg|tee g
 
 ## YouTube Upload
 
-Upload script exists but still needs an end-to-end test:
+Upload script exists but still needs an end-to-end test. Standard render uploads include
+`full_game_scorebug.mp4`, `condensed_game.mp4`, `highlight_reel.mp4`, and
+`player_reels/*.mp4` when present:
 
 ```bash
-.venv/bin/python gc_upload_youtube.py gc_render_test/player_reels/*.mp4 \
+.venv/bin/python gc_upload_youtube.py \
+  --render-dir gc_render_test \
+  --include-standard-renders \
+  --game-json gc_output_test/79e5bb9f-f87e-4d02-96ba-6abb4e7777aa/game.json \
   --client-secrets client_secret.json \
   --token-file youtube_token.json \
   --privacy-status unlisted
 ```
+
+With `--game-json` and no explicit `--description`/`--description-file`, the full-game
+upload description follows the original Colab shape: `# Top/Bot inning` headers and
+timestamped play summaries. Keep this as the default for the full-game upload.
 
 Keep `client_secret.json` and `youtube_token.json` out of version control and out of logs.
