@@ -476,20 +476,34 @@ def simplified_play_description(play: dict[str, Any], prefixes: list[str] | None
     return remove_base_context(clean_player_name(summary))
 
 
-def read_description_overrides(path: Path | None) -> dict[int, str]:
+def play_override_key(play: dict[str, Any]) -> str:
+    return f"{play.get('video_timestamp') or ''}|{play.get('play_type') or ''}"
+
+
+def read_description_overrides(path: Path | None) -> dict[int | str, str]:
     if path is None or not path.exists():
         return {}
-    overrides: dict[int, str] = {}
+    overrides: dict[int | str, str] = {}
     current_index: int | None = None
+    current_key: str | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
-        header = re.match(r"^##\s+(\d+)\.", line)
+        header = re.match(r"^##\s+(\d+)\.\s+([^`]+?)\s+`([^`]+)`", line)
         if header:
             current_index = int(header.group(1))
+            current_key = f"{header.group(2).strip()}|{header.group(3).strip()}"
+            continue
+        legacy_header = re.match(r"^##\s+(\d+)\.", line)
+        if legacy_header:
+            current_index = int(legacy_header.group(1))
+            current_key = None
             continue
         if current_index is not None and line.startswith("Proposed:"):
             value = remove_base_context(line.split(":", 1)[1].strip())
             if value:
-                overrides[current_index] = value
+                if current_key:
+                    overrides[current_key] = value
+                else:
+                    overrides[current_index] = value
     return overrides
 
 
@@ -497,9 +511,9 @@ def selected_description(
     selected_index: int,
     play: dict[str, Any],
     prefixes: list[str],
-    overrides: dict[int, str],
+    overrides: dict[int | str, str],
 ) -> str:
-    return overrides.get(selected_index) or remove_base_context(simplified_play_description(play, prefixes))
+    return overrides.get(play_override_key(play)) or overrides.get(selected_index) or remove_base_context(simplified_play_description(play, prefixes))
 
 
 def write_description_review(
