@@ -86,6 +86,8 @@ The condensed-game default selection includes:
 
 Scorebug renders include inning, score, occupied bases, and simplified play captions. The default team label is `TIG`; override labels with `--team-label` and `--opponent-label`.
 
+All render types use the same `gc_common.plays_to_segments` timing helper. Shared plays should cut the same way in highlight, player, and condensed outputs; targeted condensed pre-roll overrides are handled as explicit per-play overrides inside that shared helper.
+
 ## Caption Review
 
 Before burning captions into a full render, generate a review file:
@@ -139,7 +141,7 @@ Player reels are intentionally condensed:
 - pitchers: strikeout pitches or pitches where they record an out
 - fielders: out-producing defensive plays involving that player
 
-Player reels use the same `plays_to_segments` timing path as the highlight reel. Shared plays should cut the same way in both outputs; the default long-clip pre-roll is `18s`.
+Player reels use the same shared timing path as highlight and condensed reels. The default long-clip pre-roll is `18s`.
 
 ## Render Cache
 

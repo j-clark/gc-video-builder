@@ -29,18 +29,6 @@ PA_OUTCOME_TYPES = {
     "double_play",
 }
 BASERUNNING_TYPES = {"stole_base", "caught_stealing"}
-BATTED_BALL_TYPES = {
-    "single",
-    "double",
-    "triple",
-    "home_run",
-    "batter_out",
-    "batter_out_advance_runners",
-    "double_play",
-    "fielders_choice",
-    "reached_on_error",
-    "error",
-}
 TIGERS_ORANGE = (234, 117, 38, 255)
 
 
@@ -59,8 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-buffer", type=float, default=6.0, help="Additional seconds to add to every segment end.")
     parser.add_argument("--min-segment-length", type=float, default=12.0, help="Minimum seconds to keep for each selected play.")
     parser.add_argument("--time-shift", type=float, default=0.0, help="Shift every play timestamp by this many seconds before cutting.")
-    parser.add_argument("--long-clip-start-buffer", type=float, default=6.0, help="Pre-roll to use for longer GameChanger clips.")
-    parser.add_argument("--batted-ball-start-buffer", type=float, default=6.0, help="Pre-roll to use for batted-ball plays.")
+    parser.add_argument("--long-clip-start-buffer", type=float, default=18.0, help="Pre-roll to use for longer GameChanger clips.")
+    parser.add_argument("--batted-ball-start-buffer", type=float, default=18.0, help="Deprecated; clip timing now uses the shared long-clip logic for all play types.")
     parser.add_argument("--extra-start-play-indexes", default="", help="Comma-separated raw play indexes that need extra pre-roll.")
     parser.add_argument("--extra-start-buffer", type=float, default=18.0, help="Pre-roll for plays listed in --extra-start-play-indexes.")
     parser.add_argument("--cache-dir", default="gc_render_cache/segments", help="Directory for reusable local clip segments.")
@@ -82,59 +70,26 @@ def estimated_runtime(
     end_buffer: float,
     min_segment_length: float,
     time_shift: float = 0.0,
-    long_clip_start_buffer: float = 10.0,
-    batted_ball_start_buffer: float = 6.0,
+    long_clip_start_buffer: float = 18.0,
     extra_start_play_indexes: set[int] | None = None,
     extra_start_buffer: float = 18.0,
 ) -> float:
     return sum(
         segment.end - segment.start
-        for segment in condensed_plays_to_segments(
+        for segment in plays_to_segments(
             plays,
             start_buffer=start_buffer,
             end_buffer=end_buffer,
             min_duration=min_segment_length,
             time_shift=time_shift,
             long_clip_start_buffer=long_clip_start_buffer,
-            batted_ball_start_buffer=batted_ball_start_buffer,
-            extra_start_play_indexes=extra_start_play_indexes or set(),
-            extra_start_buffer=extra_start_buffer,
+            long_clip_start_buffer_overrides=long_clip_start_buffer_override_map(extra_start_play_indexes or set(), extra_start_buffer),
         )
     )
 
 
-def condensed_plays_to_segments(
-    plays: list[dict[str, Any]],
-    *,
-    start_buffer: float,
-    end_buffer: float,
-    min_duration: float,
-    time_shift: float,
-    long_clip_start_buffer: float,
-    batted_ball_start_buffer: float,
-    extra_start_play_indexes: set[int],
-    extra_start_buffer: float,
-) -> list[Segment]:
-    segments = []
-    for play in plays:
-        play_type_buffer = (
-            batted_ball_start_buffer
-            if play.get("play_type") in BATTED_BALL_TYPES
-            else long_clip_start_buffer
-        )
-        if int(play.get("index") or -1) in extra_start_play_indexes:
-            play_type_buffer = max(play_type_buffer, extra_start_buffer)
-        segments.extend(
-            plays_to_segments(
-                [play],
-                start_buffer=start_buffer,
-                end_buffer=end_buffer,
-                min_duration=min_duration,
-                time_shift=time_shift,
-                long_clip_start_buffer=play_type_buffer,
-            )
-        )
-    return segments
+def long_clip_start_buffer_override_map(extra_start_play_indexes: set[int], extra_start_buffer: float) -> dict[int, float]:
+    return {play_index: extra_start_buffer for play_index in extra_start_play_indexes}
 
 
 def stolen_base_priority(play: dict[str, Any]) -> tuple[int, str]:
@@ -159,7 +114,6 @@ def select_condensed_plays(
     min_segment_length: float,
     time_shift: float,
     long_clip_start_buffer: float,
-    batted_ball_start_buffer: float,
     extra_start_play_indexes: set[int],
     extra_start_buffer: float,
 ) -> list[tuple[str, dict[str, Any]]]:
@@ -198,7 +152,6 @@ def select_condensed_plays(
             min_segment_length=min_segment_length,
             time_shift=time_shift,
             long_clip_start_buffer=long_clip_start_buffer,
-            batted_ball_start_buffer=batted_ball_start_buffer,
             extra_start_play_indexes=extra_start_play_indexes,
             extra_start_buffer=extra_start_buffer,
         ) >= target_duration:
@@ -212,7 +165,6 @@ def select_condensed_plays(
             min_segment_length=min_segment_length,
             time_shift=time_shift,
             long_clip_start_buffer=long_clip_start_buffer,
-            batted_ball_start_buffer=batted_ball_start_buffer,
             extra_start_play_indexes=extra_start_play_indexes,
             extra_start_buffer=extra_start_buffer,
         ) >= target_duration:
@@ -1002,7 +954,6 @@ def main() -> None:
         min_segment_length=args.min_segment_length,
         time_shift=args.time_shift,
         long_clip_start_buffer=args.long_clip_start_buffer,
-        batted_ball_start_buffer=args.batted_ball_start_buffer,
         extra_start_play_indexes=extra_start_play_indexes,
         extra_start_buffer=args.extra_start_buffer,
     )
@@ -1024,16 +975,14 @@ def main() -> None:
     source, cookie = video_source_from_game(game, args.video)
     plays = [play for _, play in selected]
     output = Path(args.output)
-    segments = condensed_plays_to_segments(
+    segments = plays_to_segments(
         plays,
         start_buffer=args.start_buffer,
         end_buffer=args.end_buffer,
         min_duration=args.min_segment_length,
         time_shift=args.time_shift,
         long_clip_start_buffer=args.long_clip_start_buffer,
-        batted_ball_start_buffer=args.batted_ball_start_buffer,
-        extra_start_play_indexes=extra_start_play_indexes,
-        extra_start_buffer=args.extra_start_buffer,
+        long_clip_start_buffer_overrides=long_clip_start_buffer_override_map(extra_start_play_indexes, args.extra_start_buffer),
     )
     render_output = output
     temp_dir = None

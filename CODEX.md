@@ -119,12 +119,12 @@ Adjust timing if clips start late or include too much dead time:
 
 Both scripts support the same render cache and timing knobs:
 `--start-buffer`, `--end-buffer`, `--min-segment-length`, `--cache-dir`, and `--no-cache`.
-Highlight and condensed reels use an auto-anchor timing heuristic in `gc_common.plays_to_segments`:
+Highlight, player, and condensed reels all use the same auto-anchor timing helper, `gc_common.plays_to_segments`:
 
 - clips shorter than `12s` anchor from `segment_start_sec`,
 - clips `12s+` anchor near `clip_end_sec`/`video_offset_sec`,
-- highlight uses `--long-clip-start-buffer 18`,
-- condensed uses `--long-clip-start-buffer 6`, `--end-buffer 6`, and `--min-segment-length 12`,
+- default long-clip pre-roll is `18s`,
+- condensed can still use targeted `--extra-start-play-indexes` overrides, but those are passed into the shared helper rather than using a separate batted-ball timing path,
 - final review renders should usually use `--reencode`; stream-copy cuts can snap to HLS/keyframe boundaries and make timing changes look ineffective.
 
 Highlight also supports `--time-shift`; use negative values such as `--time-shift -5` when play windows start late and the whole clip should move earlier without getting longer.

@@ -467,17 +467,26 @@ def plays_to_segments(
     anchor: str = "auto",
     long_clip_threshold: float = 12.0,
     long_clip_start_buffer: float = 18.0,
+    long_clip_start_buffer_overrides: dict[int, float] | None = None,
 ) -> list[Segment]:
     segments = []
+    long_clip_start_buffer_overrides = long_clip_start_buffer_overrides or {}
     for play in plays:
         anchor_value = None
         effective_start_buffer = start_buffer
+        effective_long_clip_start_buffer = long_clip_start_buffer
+        try:
+            play_index = int(play.get("index") or -1)
+        except (TypeError, ValueError):
+            play_index = -1
+        if play_index in long_clip_start_buffer_overrides:
+            effective_long_clip_start_buffer = max(effective_long_clip_start_buffer, long_clip_start_buffer_overrides[play_index])
         duration = float(play.get("duration") or 0)
         resolved_anchor = anchor
         if anchor == "auto":
             if duration >= long_clip_threshold and (play.get("video_offset_sec") or play.get("clip_end_sec")) is not None:
                 resolved_anchor = "offset"
-                effective_start_buffer = max(start_buffer, long_clip_start_buffer)
+                effective_start_buffer = max(start_buffer, effective_long_clip_start_buffer)
             else:
                 resolved_anchor = "segment_start"
         if resolved_anchor == "segment_start":
