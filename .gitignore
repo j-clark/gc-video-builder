@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets and OAuth credentials
+.env
+*.env
+client_secret*.json
+youtube_token*.json
+token*.json
+credentials*.json
+secrets*.json
+
+# GameChanger/network captures and fetched API payloads
+*.har
+gc_output*/
+*_raw.json
+
+# Rendered media, logs, and reusable segment cache
+gc_render*/
+gc_render_cache/
+*.mp4
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.log
+
+# Local scratch/review outputs
+*.plays.txt
+*_description_review*.md
