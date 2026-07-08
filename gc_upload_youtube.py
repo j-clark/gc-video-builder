@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-standard-renders",
         action="store_true",
-        help="Include full_game_scorebug.mp4, condensed_game.mp4, highlight_reel.mp4, and player_reels/*.mp4 from --render-dir.",
+        help="Include full_game.mp4, full_game_scorebug.mp4, condensed_game.mp4, highlight_reel.mp4, and player_reels/*.mp4 from --render-dir.",
     )
     parser.add_argument("--game-json", help="Fetched game.json used to generate Colab-style full-game descriptions.")
     parser.add_argument("--client-secrets", default="client_secret.json")
@@ -69,6 +69,7 @@ def youtube_service(client_secrets: str, token_file: str):
 
 def standard_video_paths(render_dir: Path) -> list[Path]:
     candidates = [
+        render_dir / "full_game.mp4",
         render_dir / "full_game_scorebug.mp4",
         render_dir / "condensed_game.mp4",
         render_dir / "highlight_reel.mp4",
