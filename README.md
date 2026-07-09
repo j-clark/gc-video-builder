@@ -6,6 +6,7 @@ Tools for fetching GameChanger baseball metadata and building short-form videos 
 - team highlight reels
 - condensed games
 - optional burned-in scorebug and play captions
+- no-overlay full-game downloads
 - optional YouTube uploads
 
 The scripts are designed for youth baseball scoring data, where timestamps are useful but imperfect. Render commands include buffers, targeted timing overrides, and a reusable segment cache so repeated test renders do not keep rereading the GameChanger stream.
@@ -145,6 +146,32 @@ Player reels use the same shared timing path as highlight and condensed reels. T
 
 ## Full Game
 
+Download and stitch the full game without overlays. If `--team-id` and
+`--event-id` are omitted, the CLI lets you select a team and then a completed
+game:
+
+```bash
+.venv/bin/python gc_download_full_game.py \
+  --output gc_render/full_game.mp4
+```
+
+For scripted runs:
+
+```bash
+.venv/bin/python gc_download_full_game.py \
+  --team-id "$GC_TEAM_ID" \
+  --event-id GAME_EVENT_ID \
+  --output gc_render/full_game.mp4
+```
+
+The downloader fetches all playable video assets for the selected game. If
+there is only one video asset, it downloads directly to the final output with no
+stitching step. If there are multiple assets, it keeps the downloaded parts in
+`gc_render/full_game_parts` by default and stitches them into one clean MP4.
+Pass `--force` to redownload existing files or `--reencode` if stream-copy
+concat has codec/timestamp issues. Use `--dry-run` to verify team/game
+selection and playback asset discovery without downloading video.
+
 Render the full game with scorebug and play descriptions burned into the original game timeline:
 
 ```bash
@@ -211,6 +238,7 @@ Compile all scripts:
 .venv/bin/python -m py_compile \
   gc_common.py \
   gc_fetch_game.py \
+  gc_download_full_game.py \
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \

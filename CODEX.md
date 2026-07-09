@@ -15,6 +15,7 @@ This is a standalone workspace for pulling GameChanger baseball metadata and ren
 - `gc_api.md`: API notes from HAR/network exploration.
 - `gc_common.py`: shared API, timing, video-source, segment cache, and ffmpeg helpers.
 - `gc_fetch_game.py`: fetches GameChanger game metadata into a local `game.json`.
+- `gc_download_full_game.py`: interactive/scriptable no-overlay full-game downloader and stitcher.
 - `gc_make_player_reels.py`: creates per-player reels.
 - `gc_make_highlight_reel.py`: creates selected play-type highlight reel.
 - `gc_make_condensed_game.py`: creates a condensed game.
@@ -122,7 +123,34 @@ Adjust timing if clips start late or include too much dead time:
   --description-overrides gc_render_test/condensed_game_description_review_cleaned.md
 ```
 
-Both scripts support the same render cache and timing knobs:
+## Download Full Game Without Overlays
+
+Interactive team/game selection:
+
+```bash
+.venv/bin/python gc_download_full_game.py \
+  --output gc_render_test/full_game.mp4
+```
+
+Scripted team/game selection:
+
+```bash
+.venv/bin/python gc_download_full_game.py \
+  --team-id "$GC_TEAM_ID" \
+  --event-id 79e5bb9f-f87e-4d02-96ba-6abb4e7777aa \
+  --output gc_render_test/full_game.mp4
+```
+
+The downloader uses `/me/teams` for interactive team selection, combines
+schedule and game-summary data for completed-game selection, fetches all event
+playback assets, and downloads them without burning in overlays. Single-asset
+games download directly to the final output with no stitching step. Multi-asset
+games keep source parts next to the output in an `*_parts/` directory and reuse
+them on reruns; use `--force` for a cold download. Use `--reencode` if
+stream-copy stitching fails because the source parts differ. Use `--dry-run` to
+verify discovery without downloading video.
+
+Highlight and condensed render scripts support the same render cache and timing knobs:
 `--start-buffer`, `--end-buffer`, `--min-segment-length`, `--cache-dir`, and `--no-cache`.
 Highlight, player, and condensed reels all use the same auto-anchor timing helper, `gc_common.plays_to_segments`:
 
@@ -211,6 +239,7 @@ Compile scripts:
 .venv/bin/python -m py_compile \
   gc_common.py \
   gc_fetch_game.py \
+  gc_download_full_game.py \
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \

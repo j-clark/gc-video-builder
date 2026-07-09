@@ -80,6 +80,17 @@ class GCClient:
             raise GCError(f"GET {path} failed: {response.status_code} {response.text[:300]}")
         return response.json()
 
+    def get_my_teams(self) -> list[dict[str, Any]]:
+        data = self.get("/me/teams?include=user_team_associations,team_avatar_image,team_player_count,team_public_profile_id")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("teams", "items", "data"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+        raise GCError("Could not parse teams response from /me/teams.")
+
     def get_best_game_stream_id(self, event_id: str) -> str | None:
         data = self.get(f"/events/{event_id}/best-game-stream-id")
         return data.get("game_stream_id")

@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from gc_common import GCClient, plays_to_segment_pairs, select_video_asset, write_play_outputs
+from gc_common import GCClient, GCError, plays_to_segment_pairs, select_video_asset, write_play_outputs
+from gc_download_full_game import build_game_options, concat_parts, playable_assets, write_single_asset
 from gc_make_condensed_game import after_bases, overlay_timeline
 from gc_make_full_game import full_game_overlay_timeline
 import gc_upload_youtube
@@ -38,6 +39,15 @@ class FakeSession:
         if offset == 0:
             return FakeResponse({"hits": [{"id": index} for index in range(500)], "total_count": 501})
         return FakeResponse({"hits": [{"id": 500}], "total_count": 501})
+
+
+class FakeGetSession:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def get(self, _url, *, headers=None, timeout=45):
+        del headers, timeout
+        return FakeResponse(self.payload)
 
 
 class FakeYoutubeRequest:
@@ -102,6 +112,12 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(501, len(result["hits"]))
         self.assertEqual(501, result["total_count"])
         self.assertEqual([0, 500], client.session.offsets)
+
+    def test_get_my_teams_accepts_wrapped_response(self):
+        client = GCClient.__new__(GCClient)
+        client.session = FakeGetSession({"teams": [{"id": "team-id", "name": "Tigers"}]})
+
+        self.assertEqual([{"id": "team-id", "name": "Tigers"}], client.get_my_teams())
 
     def test_select_video_asset_prefers_newer_non_null_values(self):
         old_asset = {
@@ -240,6 +256,7 @@ class ReviewFixTests(unittest.TestCase):
             render_dir = Path(tmp_name)
             (render_dir / "player_reels").mkdir()
             for relative in [
+                "full_game.mp4",
                 "highlight_reel.mp4",
                 "condensed_game.mp4",
                 "full_game_scorebug.mp4",
@@ -250,6 +267,7 @@ class ReviewFixTests(unittest.TestCase):
 
             self.assertEqual(
                 [
+                    render_dir / "full_game.mp4",
                     render_dir / "full_game_scorebug.mp4",
                     render_dir / "condensed_game.mp4",
                     render_dir / "highlight_reel.mp4",
@@ -258,6 +276,92 @@ class ReviewFixTests(unittest.TestCase):
                 ],
                 standard_video_paths(render_dir),
             )
+
+    def test_build_game_options_filters_completed_games_and_sorts_newest_first(self):
+        schedule = [
+            {
+                "event": {
+                    "id": "old-game",
+                    "event_type": "game",
+                    "status": "completed",
+                    "start": {"datetime": "2026-06-01T12:00:00Z"},
+                },
+                "pregame_data": {"opponent_name": "Old Opponent"},
+            },
+            {
+                "event": {
+                    "id": "practice",
+                    "event_type": "practice",
+                    "status": "completed",
+                    "start": {"datetime": "2026-07-01T12:00:00Z"},
+                },
+            },
+            {
+                "event": {
+                    "id": "future-game",
+                    "event_type": "game",
+                    "status": "scheduled",
+                    "start": {"datetime": "2026-08-01T12:00:00Z"},
+                },
+            },
+        ]
+        summaries = [
+            {"event_id": "old-game", "game_status": "completed"},
+            {"event_id": "new-game", "game_status": "completed", "last_scoring_update": "2026-06-15T12:00:00Z"},
+            {"event_id": "future-game", "game_status": "scheduled"},
+        ]
+
+        options = build_game_options(schedule, summaries)
+
+        self.assertEqual(["new-game", "old-game"], [option["event_id"] for option in options])
+
+    def test_playable_assets_merges_metadata_sorts_and_dedupes_urls(self):
+        event_assets = [
+            {"id": "late", "created_at": "2026-06-01T12:30:00Z", "duration": 300},
+            {"id": "early", "created_at": "2026-06-01T12:00:00Z", "duration": 300},
+        ]
+        playback_assets = [
+            {"id": "late", "url": "https://example.test/late.m3u8", "cookies": {"a": "1"}},
+            {"id": "early", "url": "https://example.test/early.m3u8", "cookies": {"b": "2"}},
+            {"id": "duplicate", "url": "https://example.test/early.m3u8"},
+            {"id": "missing-url"},
+        ]
+
+        assets = playable_assets(event_assets, playback_assets)
+
+        self.assertEqual(["early", "late"], [asset["id"] for asset in assets])
+        self.assertEqual([300, 300], [asset["duration"] for asset in assets])
+        self.assertEqual({"b": "2"}, assets[0]["cookies"])
+
+    def test_write_single_asset_downloads_directly_without_parts_dir(self):
+        asset = {"url": "https://example.test/game.m3u8"}
+        with tempfile.TemporaryDirectory() as tmp_name:
+            output = Path(tmp_name) / "full_game.mp4"
+            with mock.patch("gc_download_full_game.ffmpeg_download_asset") as download, mock.patch("gc_download_full_game.shutil.copy2") as copy2:
+                write_single_asset(asset, output, parts_dir=None, reencode=False, force=False)
+
+        download.assert_called_once_with(asset, output, reencode=False, force=False)
+        copy2.assert_not_called()
+
+    def test_write_single_asset_keeps_explicit_part_without_stitching(self):
+        asset = {"url": "https://example.test/game.m3u8"}
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+            output = root / "full_game.mp4"
+            parts_dir = root / "parts"
+            with mock.patch("gc_download_full_game.ffmpeg_download_asset") as download, mock.patch("gc_download_full_game.shutil.copy2") as copy2:
+                write_single_asset(asset, output, parts_dir=parts_dir, reencode=True, force=True)
+
+        download.assert_called_once_with(asset, parts_dir / "part-001.mp4", reencode=True, force=True, label="part")
+        copy2.assert_called_once_with(parts_dir / "part-001.mp4", output)
+
+    def test_concat_parts_rejects_single_part(self):
+        with tempfile.TemporaryDirectory() as tmp_name:
+            part = Path(tmp_name) / "part-001.mp4"
+            output = Path(tmp_name) / "full_game.mp4"
+
+            with self.assertRaises(GCError):
+                concat_parts([part], output)
 
     def test_default_playlist_title_uses_game_metadata(self):
         game = {
