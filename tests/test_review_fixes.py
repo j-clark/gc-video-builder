@@ -1,10 +1,18 @@
+import datetime as dt
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from gc_common import GCClient, GCError, plays_to_segment_pairs, select_video_asset, write_play_outputs
-from gc_download_full_game import build_game_options, concat_parts, playable_assets, write_single_asset
+from gc_download_full_game import (
+    build_game_options,
+    choose_team,
+    concat_parts,
+    playable_assets,
+    sort_teams_for_picker,
+    write_single_asset,
+)
 from gc_make_condensed_game import after_bases, overlay_timeline
 from gc_make_full_game import full_game_overlay_timeline
 import gc_upload_youtube
@@ -314,6 +322,41 @@ class ReviewFixTests(unittest.TestCase):
         options = build_game_options(schedule, summaries)
 
         self.assertEqual(["new-game", "old-game"], [option["event_id"] for option in options])
+
+    def test_sort_teams_for_picker_puts_current_season_first(self):
+        teams = [
+            {"id": "fall", "name": "Fall Team", "season_name": "fall", "season_year": 2026},
+            {"id": "spring", "name": "Spring Team", "season_name": "spring", "season_year": 2026},
+            {"id": "summer", "name": "Summer Team", "season_name": "summer", "season_year": 2026},
+            {"id": "winter", "name": "Winter Team", "season_name": "winter", "season_year": 2025},
+        ]
+
+        sorted_teams = sort_teams_for_picker(teams, today=dt.date(2026, 8, 2))
+
+        self.assertEqual(["summer", "fall", "spring", "winter"], [team["id"] for team in sorted_teams])
+
+    def test_sort_teams_for_picker_supports_nested_team_payloads(self):
+        teams = [
+            {"team": {"id": "old", "name": "Old Team", "team_season": {"season": "fall", "year": 2025}}},
+            {"team": {"id": "active", "name": "Active Team", "team_season": {"season": "summer", "year": 2026}}},
+        ]
+
+        sorted_teams = sort_teams_for_picker(teams, today=dt.date(2026, 8, 2))
+
+        self.assertEqual(["active", "old"], [team["team"]["id"] for team in sorted_teams])
+
+    def test_choose_team_sorts_before_showing_picker(self):
+        client = mock.Mock()
+        client.get_my_teams.return_value = [
+            {"id": "old", "name": "Old Team", "season_name": "fall", "season_year": 2025},
+            {"id": "active", "name": "Active Team", "season_name": "summer", "season_year": 2026},
+        ]
+
+        with mock.patch("gc_download_full_game.current_season", return_value=("summer", 2026)):
+            with mock.patch("gc_download_full_game.choose_option", side_effect=lambda options, **_kwargs: options[0]):
+                selected = choose_team(client, None)
+
+        self.assertEqual("active", selected["id"])
 
     def test_playable_assets_merges_metadata_sorts_and_dedupes_urls(self):
         event_assets = [

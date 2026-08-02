@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
 import shutil
 import sys
@@ -52,6 +53,59 @@ def find_team(teams: list[dict[str, Any]], requested_team_id: str) -> dict[str, 
     return next((team for team in teams if team_id(team) == requested_team_id), None)
 
 
+SEASON_ORDER = {
+    "winter": 0,
+    "spring": 1,
+    "summer": 2,
+    "fall": 3,
+}
+
+
+def current_season(today: dt.date | None = None) -> tuple[str, int]:
+    today = today or dt.date.today()
+    if today.month in (12, 1, 2):
+        season = "winter"
+    elif today.month in (3, 4, 5):
+        season = "spring"
+    elif today.month in (6, 7, 8):
+        season = "summer"
+    else:
+        season = "fall"
+    return season, today.year
+
+
+def team_season(team: dict[str, Any]) -> tuple[str, int]:
+    payload = team_payload(team)
+    nested = payload.get("team_season") or {}
+    season = str(payload.get("season_name") or nested.get("season") or "").lower()
+    raw_year = payload.get("season_year") or nested.get("year")
+    try:
+        year = int(raw_year)
+    except (TypeError, ValueError):
+        year = -1
+    return season, year
+
+
+def sort_teams_for_picker(
+    teams: list[dict[str, Any]],
+    *,
+    today: dt.date | None = None,
+) -> list[dict[str, Any]]:
+    active_season, active_year = current_season(today)
+
+    def sort_key(team: dict[str, Any]) -> tuple[bool, int, int, str]:
+        season, year = team_season(team)
+        is_active = season == active_season and year == active_year
+        return (
+            not is_active,
+            -year,
+            -SEASON_ORDER.get(season, -1),
+            team_name(team).lower(),
+        )
+
+    return sorted(teams, key=sort_key)
+
+
 def choose_option(options: list[Any], *, prompt: str, required_arg: str, labeler) -> Any:
     if not options:
         raise GCError(f"No options available for {prompt.lower()}.")
@@ -79,7 +133,7 @@ def choose_team(client: GCClient, requested_team_id: str | None) -> dict[str, An
     if requested_team_id:
         teams = safe_get(lambda: client.get_my_teams(), [], label="teams")
         return find_team(teams, requested_team_id) or {"id": requested_team_id, "name": requested_team_id}
-    teams = client.get_my_teams()
+    teams = sort_teams_for_picker(client.get_my_teams())
     return choose_option(teams, prompt="team", required_arg="--team-id", labeler=team_name)
 
 
