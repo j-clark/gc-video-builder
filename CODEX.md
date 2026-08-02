@@ -14,6 +14,10 @@ This is a standalone workspace for pulling GameChanger baseball metadata and ren
 
 - `gc_api.md`: API notes from HAR/network exploration.
 - `gc_common.py`: shared API, timing, video-source, segment cache, and ffmpeg helpers.
+- `gc_season.py`: SQLite season projects, clip ranking/review state, previews, and season reel rendering.
+- `gc_season_bridge.py`: JSON bridge between Next.js route handlers and the Python season engine.
+- `web/`: Next.js season review app with inline video playback.
+- `gc_review_season.py`: legacy Textual interface for the same season projects.
 - `gc_fetch_game.py`: fetches GameChanger game metadata into a local `game.json`.
 - `gc_download_full_game.py`: interactive/scriptable no-overlay full-game downloader and stitcher.
 - `gc_make_player_reels.py`: creates per-player reels.
@@ -60,6 +64,19 @@ If `--event-id` is omitted, the script picks the latest completed game for `GC_T
 The fetch script writes a game folder containing `game.json`, raw clips, raw stream events, and play indexes. The render scripts expect `stream_events_raw.json` next to `game.json` for richer player-role selection.
 
 ## Render Player Reels
+
+For end-of-season curation across all completed games, use the Next.js app:
+
+```bash
+export GC_TOKEN='...'
+cd web
+npm install
+npm run dev
+```
+
+Season projects live under `gc_seasons/` by default. Clip metadata/timing review
+and per-player reel inclusion are independent states; do not collapse them when
+changing the project schema.
 
 Default player-reel behavior is intentionally condensed:
 
@@ -240,6 +257,9 @@ Compile scripts:
   gc_common.py \
   gc_fetch_game.py \
   gc_download_full_game.py \
+  gc_season.py \
+  gc_season_bridge.py \
+  gc_review_season.py \
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \

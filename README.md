@@ -3,6 +3,7 @@
 Tools for fetching GameChanger baseball metadata and building short-form videos from archived game streams:
 
 - player reels
+- resumable end-of-season player highlight curation
 - team highlight reels
 - condensed games
 - optional burned-in scorebug and play captions
@@ -54,6 +55,50 @@ The fetch creates a per-game folder containing:
 - play indexes as CSV/Markdown
 
 Most render commands take the fetched `game.json` path as their first argument.
+
+## Season Player Highlights
+
+Install and start the Next.js review app:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:3000`. The server inherits `GC_TOKEN` from the shell, so
+export it before starting Next.js when importing games or generating previews:
+
+```bash
+export GC_TOKEN='...'
+cd web
+npm run dev
+```
+
+Alternatively, use **Token** in the top bar. That value is kept only in the
+current browser tab and is sent to the local Next.js server for API operations.
+
+Choose a GameChanger team/season on first launch. The project imports all
+completed games and provides:
+
+- **All Queue** ranks every unreviewed clip. Confirming a clip locks its player-role
+  tags and final timing, then removes it from this queue.
+- **Player Queue** independently accepts, skips, or defers confirmed clips for each
+  affected player's reel. Unconfirmed inferred candidates are also shown but cannot
+  be accepted until confirmed.
+- **Accepted** rearranges a player's accepted clips before rendering.
+- **Dashboard** summarizes review progress for every roster player.
+
+Preview downloads include 20-second handles around the proposed cut and play
+directly in the browser at the proposed in-point. Preview files are retained under
+the project and may be deleted manually; the app downloads them again when needed.
+
+Season projects default to `gc_seasons/` and contain a SQLite database, raw API
+snapshots, previews, and clean player-reel renders.
+
+Use **Refresh** to import newly completed games without losing clip reviews,
+player decisions, timing edits, or reel ordering. A `*` beside a reviewed state
+means GameChanger changed the underlying clip metadata after review.
 
 ## Condensed Game
 
@@ -239,6 +284,9 @@ Compile all scripts:
   gc_common.py \
   gc_fetch_game.py \
   gc_download_full_game.py \
+  gc_season.py \
+  gc_season_bridge.py \
+  gc_review_season.py \
   gc_make_player_reels.py \
   gc_make_highlight_reel.py \
   gc_make_condensed_game.py \
